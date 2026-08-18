@@ -1,0 +1,138 @@
+const LINE_MAX = 34;
+const MEMORY_MAX = 110;
+
+function cleanText(text, max) {
+    let s = String(text || '')
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/[\u201c\u201d]/g, '"')
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/\u2026/g, '...')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toUpperCase();
+    s = s.replace(/[^A-Z0-9 .,!?'"():+\-\/<>*&=#_]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    if (s.length <= max) return s;
+    return `${s.slice(0, Math.max(1, max - 2)).trimEnd()}..`;
+}
+
+function clamp(n, lo, hi) {
+    return Math.max(lo, Math.min(hi, n));
+}
+
+function send(res, status, payload) {
+    const origin = process.env.RY_FARMS_CHAT_ORIGIN;
+    if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'application/json');
+    res.statusCode = status;
+    res.end(JSON.stringify(payload));
+}
+
+function parseBody(req) {
+    if (req.body && typeof req.body === 'object') return req.body;
+    if (typeof req.body === 'string') return JSON.parse(req.body || '{}');
+    return new Promise((resolve, reject) => {
+        let raw = '';
+        req.on('data', chunk => { raw += chunk; });
+        req.on('end', () => {
+            try { resolve(raw ? JSON.parse(raw) : {}); }
+            catch (err) { reject(err); }
+        });
+        req.on('error', reject);
+    });
+}
+
+const { callLLM } = require('./_llm.js');
+const { asText } = require('./_text.js');   // #111 P2 type boundary: coercion is not a type check
+
+function normalizeConversation(raw) {
+    const first = Array.isArray(raw?.lines) ? raw.lines[0] : null;
+    const second = Array.isArray(raw?.lines) ? raw.lines[1] : null;
+    const speakerLine = cleanText(asText(raw?.speakerLine) || asText(raw?.speaker_line) || asText(first?.text), LINE_MAX);
+    const listenerLine = cleanText(asText(raw?.listenerLine) || asText(raw?.listener_line) || asText(second?.text), LINE_MAX);
+    if (!speakerLine || !listenerLine) throw new Error('model returned empty lines');
+    return {
+        speakerLine,
+        listenerLine,
+        speakerTone: cleanText(asText(raw?.speakerTone) || asText(first?.tone) || 'reflective', 18).toLowerCase(),
+        listenerTone: cleanText(asText(raw?.listenerTone) || asText(second?.tone) || 'reflective', 18).toLowerCase(),
+        memory: cleanText(asText(raw?.memory) || asText(raw?.summary) || `${speakerLine} / ${listenerLine}`, MEMORY_MAX),
+        relationshipDelta: clamp(Number(raw?.relationshipDelta ?? raw?.relationship_delta ?? 0) || 0, -0.05, 0.05),
+        relationshipReason: cleanText(asText(raw?.relationshipReason) || asText(raw?.relationship_reason) || 'opened up in conversation', 70),
+    };
+}
+
+const responseSchema = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['speakerLine', 'listenerLine', 'speakerTone', 'listenerTone', 'memory', 'relationshipDelta', 'relationshipReason'],
+    properties: {
+        speakerLine: { type: 'string', maxLength: LINE_MAX },
+        listenerLine: { type: 'string', maxLength: LINE_MAX },
+        speakerTone: { type: 'string' },
+        listenerTone: { type: 'string' },
+        memory: { type: 'string', maxLength: MEMORY_MAX },
+        relationshipDelta: { type: 'number', minimum: -0.05, maximum: 0.05 },
+        relationshipReason: { type: 'string', maxLength: 70 },
+    },
+};
+
+module.exports = async function handler(req, res) {
+    if (req.method === 'OPTIONS') {
+        const origin = process.env.RY_FARMS_CHAT_ORIGIN;
+        if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        return send(res, 204, {});
+    }
+    if (req.method !== 'POST') return send(res, 405, { fallback: true, error: 'POST required' });
+
+    if (!process.env.OPENAI_API_KEY && !process.env.OPENAI_BASE_URL) return send(res, 503, { fallback: true, error: 'LLM not configured' });
+    if (typeof fetch !== 'function') return send(res, 501, { fallback: true, error: 'fetch unavailable' });
+
+    try {
+        const body = await parseBody(req);
+        const context = body.context || body;
+        const system = [
+            'You are the conversation engine for Verdant Signal, a cozy pixel-art science-fiction colony simulation.',
+            context.culture === 'orc'
+                ? 'CULTURE VOICE: both speakers are alien scavengers in a raider crew - blunt, practical, loyal, and shaped by salvage life. They are a people, not caricature villains.'
+                : 'CULTURE VOICE: both speakers are colonists tending an alien biosphere - practical, curious, wary, and communal.',
+            'Write one brief, lived-in exchange between the speaker and listener — dynamic and specific to THIS moment, never generic.',
+            'Ground it in the context: their goals, shared memories, planetary weather/cycle, and colony state.',
+            'Let PERSONALITY and MOOD drive the voice: a mercurial temper or an "out of sorts" mood reads as short/prickly; "buoyant" reads warm; low honesty schemes and flatters; high drive competes.',
+            'Let RELATIONSHIP steer it: warmly with someone they trust; guarded or barbed with someone they resent (see opinionOfOther, trusts, wary).',
+            'If the speaker carries a grudge (gossipTarget) or has heard rumors (rumorsHeard) about a third party, they may quietly warn the listener about that person.',
+            'A colonist far along may share a hard-won tip; a well-travelled one may mention what they found beyond the survey grid.',
+            'Avoid generic greetings unless the context truly calls for one.',
+            // #chat-address — in a crowded lane the watcher can't tell who an exchange belongs to
+            'The SPEAKER opens by addressing the listener BY FIRST NAME, woven naturally into the line ("Rover, that fence of yours..."). The LISTENER replies without the name unless it is natural - a follow-up question, a pointed retort, or redirecting to a third person.',
+            'No emojis, markdown, Earth-fantasy references, or narration.',
+            `Each visible line must be ${LINE_MAX} characters or less.`,
+            'Return JSON only.',
+        ].join('\n');
+
+        const raw = await callLLM({
+            system,
+            user: JSON.stringify(context),
+            // 600, not 320 (measured 2026-08-10, tools/probe-endpoints.mjs). This is the richest
+            // schema in the game — seven required fields including two dialogue lines, a memory and
+            // a reason — on the tightest budget relative to its output. gpt-oss-120b managed it;
+            // gpt-oss-20b returned EMPTY LINES, because reasoning tokens are charged against
+            // max_tokens and there was nothing left to speak with.
+            //
+            // That matters more than one model being fussy: 20b is the FALLBACK. A chain whose
+            // safety net silently kills chat is not a safety net — failing over would have traded
+            // one dead feature for another, which is the whole failure class this work exists to
+            // end. The content itself needs ~100 tokens; the rest is thinking room.
+            // BACKGROUND (Codex #107 P1-3): nobody is synchronously waiting — cosmetic: the scripted lines are already on screen when this runs.
+            // Only DM was classified, so every other async caller could spend the whole minute and
+            // starve a player waiting on a two-stage whisper.
+            schema: responseSchema, schemaName: 'ry_farms_chat', maxTokens: 600, priority: 'background',
+        });
+        return send(res, 200, normalizeConversation(raw));
+    } catch (err) {
+        return send(res, 500, { fallback: true, error: err?.message || 'chat generation failed' });
+    }
+};

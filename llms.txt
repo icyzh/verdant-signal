@@ -1,0 +1,51 @@
+# Verdant Signal
+
+> Verdant Signal is a free procedural cozy science-fiction colony simulation for desktop and tablet
+> browsers at https://propagate.world. Every colonist is an autonomous agent with rolled abilities and a
+> persistent personality; the colony remembers itself between visits. Built by icyzh.
+
+## What it is
+
+- A single-page browser game with crisp pixel art, no install, account, or cost.
+- Found a biosphere colony or assemble an alien scavenger crew. Both cultures have distinct environments,
+  economies, music, and voice while sharing one deterministic simulation.
+- Desktop and landscape tablets are supported; phones receive a lightweight title screen.
+
+## How it works
+
+- Colonists cultivate xenocrops, gather alien flora, build habitats, barter supplies, invent field
+  technology, form bonds and grudges, elect leaders, and defend against scavenger incursions.
+- Saves live in IndexedDB and return with a recap. Long-term memory can carry lore and lineages between
+  colonies without entering the deterministic simulation loop.
+- The same seed grows the same colony. Optional language-model channels enrich conversations and prose;
+  authored fallbacks keep the complete game playable offline.
+- Players can whisper a signal to a colonist. Whether they heed it is determined by their personality and
+  the simulation, never by the language model.
+
+## Facts
+
+- Name: Verdant Signal.
+- Play: https://propagate.world.
+- Creator: icyzh — https://github.com/icyzh.
+- Price: free. Platform: desktop and landscape-tablet web browsers. Mode: single player.
+- Art: original procedural pixel sprites and original Verdant Signal key art.
+- Genre: colony simulation, cozy science fiction, god game, agent-based simulation.
+
+## Technology
+
+- Vanilla JavaScript ES modules, Canvas 2D, and a clean nearest-neighbour WebGL display scaler; no build step.
+- Deterministic seeded simulation with display, chat, and player-whisper side channels kept outside sim state.
+- Browser-local IndexedDB saves use compare-and-set revisions; gameplay state is not stored server-side.
+
+## FAQ
+
+**Is Verdant Signal free?** Yes — no download, account, or ads.
+
+**Does it use AI?** Each colonist is an autonomous simulation agent. Optional language models enrich
+expressive text only; deterministic mechanics and offline fallbacks remain authoritative.
+
+**Can I lose my colony?** Clearing browser site data erases local saves; otherwise the colony waits and
+recaps what happened when you return.
+
+**Is it multiplayer?** Single player, in a world of neighbouring colonies that can encounter and remember
+one another.

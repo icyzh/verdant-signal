@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Verdant Signal · colony memory</title>
+<style>
+  html,body { margin:0; height:100%; background:#08090c; overflow:hidden; }
+  /* the WebGL output canvas fills the screen; the graph is drawn to a hidden low-res canvas
+     and pushed through the same CRT shader the game uses, so this looks like the same tube. */
+  #out { display:block; width:100vw; height:100vh; image-rendering:pixelated; cursor:grab; }
+  #out:active { cursor:grabbing; }
+  #src { display:none; }
+  #boot { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:2;
+    color:#7dd069; font-family:ui-monospace,monospace; font-size:13px; letter-spacing:2px; background:#08090c; }
+</style>
+</head>
+<body>
+<canvas id="out"></canvas>
+<canvas id="src"></canvas>
+<div id="boot">TUNING CHANNEL…</div>
+
+<script type="module">
+import { drawText, textWidth } from './pixel.js';
+import { CRT } from './crt.js';
+
+const out = document.getElementById('out');
+const src = document.getElementById('src');
+const sctx = src.getContext('2d', { alpha: false });
+let crt = null;
+
+// ---- internal resolution: fix the height (like the game), derive width from the window aspect ----
+const GH = 340;
+let GW = 600, DPR = Math.min(2, window.devicePixelRatio || 1);
+function resize() {
+  GW = Math.max(360, Math.round(GH * window.innerWidth / window.innerHeight));
+  src.width = GW; src.height = GH;
+  out.width = Math.round(window.innerWidth * DPR); out.height = Math.round(window.innerHeight * DPR);
+  if (!crt) crt = new CRT(out, src);
+}
+addEventListener('resize', resize); resize();
+
+// ---- palette (the game's warm tube tones) ----
+const C = { bg:'#0a0b0e', title:'#7dd069', sub:'#c9a45a', dim:'#6a6456', label:'#cfc6b0',
+            creed:'#c8a0e0', belief:'#8fc7e8', mem:'#7dd069', rift:'#e0584a', bond:'#7dd069',
+            wood:'#6d5334', woodHi:'#8a6b44', woodLo:'#4a3824', woodEdge:'#231a10', panelIn:'#191410', rivet:'#c9a45a' };
+const KIND_COL = { creed:C.creed, belief:C.belief, mem:C.mem, invention:'#e0a848', battle:'#ff6a50' };
+function kindOf(m){ if(/\bcreed|lives by|taught them|drilled|raised (them|to)/i.test(m)) return 'creed';
+                   if(/belief|come to believe|earned belief|no longer/i.test(m)) return 'belief'; return 'mem'; }
+const RIFT = /chiselled|wronged|fell out|feud/;
+function nameColor(s){ let h=0; for(const c of s) h=(h*31+c.charCodeAt(0))>>>0; return `hsl(${h%360} 42% 60%)`; }
+
+// wood-frame panel, same recipe as the game's uiPanel
+function panel(x, y, w, h) {
+  sctx.fillStyle='rgba(0,0,0,0.45)'; sctx.fillRect(x+2, y+3, w, h);
+  sctx.fillStyle=C.woodEdge; sctx.fillRect(x, y, w, h);
+  sctx.fillStyle=C.wood; sctx.fillRect(x+1, y+1, w-2, h-2);
+  sctx.fillStyle=C.woodHi; sctx.fillRect(x+1, y+1, w-2, 1);
+  sctx.fillStyle=C.woodLo; sctx.fillRect(x+1, y+h-2, w-2, 1);
+  sctx.fillStyle=C.panelIn; sctx.fillRect(x+3, y+3, w-6, h-6);
+  sctx.fillStyle=C.rivet;
+  for (const [rx,ry] of [[x+2,y+2],[x+w-4,y+2],[x+2,y+h-4],[x+w-4,y+h-4]]) sctx.fillRect(rx, ry, 2, 2);
+}
+function wrap(str, maxW) { const words=String(str).split(' '), out=[]; let cur='';
+  for (const w of words){ const t=cur?cur+' '+w:w; if(textWidth(t)>maxW){ if(cur)out.push(cur); cur=w; } else cur=t; }
+  if(cur) out.push(cur); return out; }
+
+// ---- state ----
+const view = { x:0, y:0, z:1 };
+let nodes=[], links=[], farmerNodes=[], townNodes=[], warNodes=[], selected=null, hover=null, alpha=1;
+let panelX=GW, sheetLines=[], sheetScroll=0, sheetH=0;
+function reheat(a=0.5){ alpha=Math.max(alpha,a); }
+
+// pull town display-names from the game's IndexedDB world index (same origin) so every hub is labelled,
+// not just the ones with a civic record. Best-effort: resolves {} if the db/store isn't there.
+function townNames() {
+  return new Promise(resolve=>{
+    let done=false; const finish=v=>{ if(!done){ done=true; resolve(v||{}); } };
+    try {
+      const req = indexedDB.open('ryfarms', 1);
+      req.onupgradeneeded = () => finish({});   // db/store missing -> no names
+      req.onerror = () => finish({});
+      req.onsuccess = () => { const db=req.result;
+        try { if(!db.objectStoreNames.contains('towns')) return finish({});
+          const g=db.transaction('towns','readonly').objectStore('towns').get('world');
+          g.onsuccess=()=>{ const idx=g.result||{}, out={};
+            for (const [seed,t] of Object.entries(idx.towns||{})) if(t&&t.name) out[String(seed)]=String(t.name).toUpperCase();
+            finish(out); };
+          g.onerror=()=>finish({});
+        } catch { finish({}); } };
+    } catch { finish({}); }
+    setTimeout(()=>finish({}), 1200);
+  });
+}
+
+async function load() {
+  let data; try { data = await (await fetch('/api/memory-graph')).json(); }
+  catch { data = { towns:[], source:'offline' }; }
+  document.getElementById('boot').style.display='none';
+  let towns = data.towns || [];
+  // #local-memory — the browser store is a first-class source: towns THIS browser remembers render
+  // alongside (or instead of) anything a self-hosted server returns. Server wins per-seed on conflicts.
+  try {
+    const MS = await import('./memory-store.js');
+    // Codex #88 P1 — BOUNDED like the game boot: a never-settling IndexedDB open must not hang the
+    // portal blank (the boot overlay is already gone by here). 3s, then the server result stands alone.
+    const localTowns = await Promise.race([MS.localGraphTowns(), new Promise(res => setTimeout(() => res([]), 3000))]);
+    const have = new Set(towns.map(t => String(t.seed)));
+    for (const t of localTowns) if (!have.has(String(t.seed))) towns.push(t);
+    if (localTowns.length && (!data.source || data.source === 'offline' || data.source === 'empty' || data.source === 'error')) data.source = 'this browser';
+  } catch { /* IDB refused — the server result stands alone */ }
+  // backward-compat: a dev server that hasn't reloaded the API still returns the OLD single-town {farmers}
+  // shape. Wrap it as one town so the portal populates from either server version (restart for all towns).
+  if (!towns.length && Array.isArray(data.farmers) && data.farmers.length) {
+    towns = [{ seed: 'active', name: data.townHistory && data.townHistory.town, farmers: data.farmers,
+               links: data.links || [], townHistory: (data.townHistory && data.townHistory.text) || null,
+               inventions: data.inventions || [] }];
+  }
+  const totalFarmers = towns.reduce((a,t)=>a+(t.farmers||[]).length,0);
+  window._src = data.source;
+  window._ties = towns.reduce((a,t)=>a+(t.links||[]).length,0);
+  window._townCount = towns.length;
+  if (!totalFarmers && !towns.length) { window._empty =
+      'NO MEMORIES STORED YET - OPEN A TOWN AND LET IT RUN'; requestAnimationFrame(tick); return; }
+  const names = await townNames();
+  const cx=GW/2, cy=GH/2, R=Math.min(GW,GH)*0.34;
+  // Each TOWN is its own cluster: a gold-diamond hub pinned on a ring, its farmers orbiting, their memories
+  // as satellites, the town's inventions off the hub. Farmers are sprung to THEIR hub so towns stay distinct.
+  towns.forEach((t, ti) => {
+    const ang = towns.length===1 ? -Math.PI/2 : (ti/towns.length)*Math.PI*2 - Math.PI/2;
+    const hx = towns.length===1 ? cx : cx + Math.cos(ang)*R;
+    const hy = towns.length===1 ? cy : cy + Math.sin(ang)*R;
+    const label = names[String(t.seed)] || (t.name ? String(t.name).toUpperCase() : ('TOWN ' + String(t.seed).slice(-4)));
+    const tn={ type:'town', name:label, first:label, text:t.townHistory, seed:t.seed, farmers:[],
+               mass:3, x:hx, y:hy, ax:hx, ay:hy, vx:0, vy:0, r:12, col:'#e8c860' };
+    nodes.push(tn); townNodes.push(tn);
+    const byName=new Map();
+    (t.farmers||[]).forEach((f,i)=>{ const n=(t.farmers||[]).length||1, a=(i/n)*Math.PI*2;
+      const fn={ type:'farmer', name:f.name, first:f.name.split(' ')[0], memories:f.memories, town:tn, mass:1,
+                 x:hx+Math.cos(a)*46, y:hy+Math.sin(a)*46, vx:0, vy:0, r:8, col:nameColor(f.name) };
+      nodes.push(fn); farmerNodes.push(fn); tn.farmers.push(fn); byName.set(f.name, fn);
+      links.push({ a:tn, b:fn, hub:true });   // spring each farmer to its own town hub
+      (f.memories||[]).forEach((text,j)=>{ const b=a+(j-f.memories.length/2)*0.5, kind=kindOf(text);
+        nodes.push({ type:'mem', kind, text, parent:fn, mass:0.28,
+          x:fn.x+Math.cos(b)*22, y:fn.y+Math.sin(b)*22, vx:0, vy:0, r:2.5, col:KIND_COL[kind] });
+        links.push({ a:fn, b:nodes[nodes.length-1], sat:true }); });
+    });
+    (t.links||[]).forEach(l=>{ const a=byName.get(l.a), b=byName.get(l.b); if(a&&b) links.push({ a, b, label:l.label }); });
+    (t.inventions||[]).forEach((text,j)=>{ const n=(t.inventions||[]).length||1, a=(j/n)*Math.PI*2;
+      nodes.push({ type:'mem', kind:'invention', text, parent:tn, mass:0.3,
+        x:hx+Math.cos(a)*26, y:hy+Math.sin(a)*26, vx:0, vy:0, r:3, col:KIND_COL.invention });
+      links.push({ a:tn, b:nodes[nodes.length-1], sat:true }); });
+    // #nemesis THE WARS: battle documents grouped by foe -> a red war hub off the town, each battle a
+    // satellite, and a 'fought' thread to every farmer the record names. The judged loop, drawn.
+    const wars = new Map();
+    (t.battles||[]).forEach(b => { const k = b.foe || 'A WARBAND'; if (!wars.has(k)) wars.set(k, []); wars.get(k).push(b); });
+    let wi = 0;
+    wars.forEach((batts, foe) => {
+      batts.sort((x,y)=> (String(x.year)+String(x.day).padStart(4,'0')).localeCompare(String(y.year)+String(y.day).padStart(4,'0')));
+      const wa = ((wi++)/Math.max(1,wars.size))*Math.PI*2 + 0.9;
+      const wn = { type:'war', name: foe, first: foe.split(' ')[0], battles: batts, town: tn, mass: 1.6,
+                   x:hx+Math.cos(wa)*70, y:hy+Math.sin(wa)*70, vx:0, vy:0, r:9, col:'#e05840' };
+      nodes.push(wn); warNodes.push(wn);
+      links.push({ a:tn, b:wn, hub:true });
+      batts.forEach((b,j)=>{ const ba = wa + (j - batts.length/2)*0.55;
+        nodes.push({ type:'mem', kind:'battle', text:b.text, parent:wn, mass:0.32,
+          x:wn.x+Math.cos(ba)*24, y:wn.y+Math.sin(ba)*24, vx:0, vy:0, r:3.2, col:KIND_COL.battle });
+        links.push({ a:wn, b:nodes[nodes.length-1], sat:true }); });
+      byName.forEach((fn, full)=>{ const first = full.split(' ')[0];
+        if (batts.some(b => new RegExp('\\b'+first+'\\b').test(b.text))) links.push({ a:wn, b:fn, label:'fought' }); });
+    });
+  });
+  requestAnimationFrame(tick);
+}
+
+function step() {
+  for (let i=0;i<nodes.length;i++){ const n=nodes[i]; if(n.type==='town') continue; let fx=0, fy=0;   // hubs are pinned
+    for (let k=0;k<nodes.length;k++){ if(k===i) continue; const m=nodes[k];
+      let dx=n.x-m.x, dy=n.y-m.y, d2=dx*dx+dy*dy+0.01, d=Math.sqrt(d2);
+      const rep=640*n.mass*m.mass/d2; fx+=dx/d*rep; fy+=dy/d*rep; }
+    n.vx=(n.vx+fx*alpha)*0.82; n.vy=(n.vy+fy*alpha)*0.82;
+  }
+  for (const l of links){ const dx=l.b.x-l.a.x, dy=l.b.y-l.a.y, d=Math.hypot(dx,dy)||1, ux=dx/d, uy=dy/d;
+    if (l.sat){ const k=(d-22)*0.09*alpha;
+      if(l.b!==dragNode){ l.b.vx-=ux*k; l.b.vy-=uy*k; } if(l.a!==dragNode && l.a.type!=='town'){ l.a.vx+=ux*k*0.12; l.a.vy+=uy*k*0.12; } }
+    else if (l.hub){ const k=(d-48)*0.05*alpha;   // farmer <- its pinned town hub (keeps the cluster together)
+      if(l.b!==dragNode){ l.b.vx-=ux*k; l.b.vy-=uy*k; } }
+    else { const k=(d-40)*0.02*alpha;             // intra-town relationship edge
+      if(l.a!==dragNode){ l.a.vx+=ux*k; l.a.vy+=uy*k; } if(l.b!==dragNode){ l.b.vx-=ux*k; l.b.vy-=uy*k; } }
+  }
+  for (const n of nodes){ if(n===dragNode || n.type==='town') continue; n.x+=n.vx; n.y+=n.vy; }   // town hubs pinned at their anchors
+  if (!dragNode) alpha*=0.985;
+}
+
+function tick(t) {
+  if ((alpha>0.02 || dragNode) && nodes.length) step();
+  panelX += ((selected ? GW-PW : GW) - panelX) * 0.22;   // slide the sheet in/out
+  draw();
+  crt.render((t||0)/1000);
+  requestAnimationFrame(tick);
+}
+
+const PW = 118;
+function draw() {
+  sctx.fillStyle=C.bg; sctx.fillRect(0,0,GW,GH);
+  // faint starfield-ish speckle so the void isn't dead flat (cheap, deterministic by position)
+  sctx.save(); sctx.translate(view.x,view.y); sctx.scale(view.z,view.z);
+  // faint gold ties from each TOWN hub to its own farmers (drawn first, under everything)
+  sctx.strokeStyle='rgba(232,200,96,.16)'; sctx.lineWidth=1;
+  for (const tn of townNodes){ for (const f of tn.farmers){ sctx.beginPath(); sctx.moveTo(tn.x,tn.y); sctx.lineTo(f.x,f.y); sctx.stroke(); } }
+  // links
+  for (const l of links){
+    if (l.hub) continue;   // farmer<->town hub ties are already the faint gold lines above (and carry no label)
+    if (l.sat){ const lit=selected && l.a===selected; sctx.strokeStyle=lit?'rgba(201,164,90,.35)':'rgba(120,110,86,.16)'; sctx.lineWidth=1; }
+    else { sctx.strokeStyle=RIFT.test(l.label)?'rgba(224,88,74,.6)':'rgba(125,208,105,.55)'; sctx.lineWidth=1; }
+    sctx.beginPath(); sctx.moveTo(l.a.x,l.a.y); sctx.lineTo(l.b.x,l.b.y); sctx.stroke();
+    if(!l.sat && l.label){ const mx=(l.a.x+l.b.x)/2, my=(l.a.y+l.b.y)/2; drawText(sctx, l.label, mx-textWidth(l.label)/2, my-6, '#9a9078'); }
+  }
+  // memory satellites
+  for (const n of nodes){ if(n.type!=='mem') continue; const hov=n===hover, dim=selected&&n.parent!==selected;
+    sctx.globalAlpha=dim?0.3:1; const r=hov?n.r+1.5:n.r;
+    sctx.fillStyle=n.col; sctx.beginPath(); sctx.arc(n.x,n.y,r,0,7); sctx.fill();
+    if(hov){ sctx.strokeStyle='#fff'; sctx.lineWidth=0.8; sctx.stroke(); } sctx.globalAlpha=1;
+  }
+  // farmer tokens: filled disc + gold rivet-ring, name below in the bitmap font
+  for (const n of farmerNodes){ const sel=n===selected, hov=n===hover;
+    sctx.fillStyle=n.col; sctx.beginPath(); sctx.arc(n.x,n.y,n.r,0,7); sctx.fill();
+    sctx.strokeStyle=(sel||hov)?'#fff':C.rivet; sctx.lineWidth=1; sctx.beginPath(); sctx.arc(n.x,n.y,n.r,0,7); sctx.stroke();
+    const nm=n.first.toUpperCase(); drawText(sctx, nm, Math.round(n.x-textWidth(nm)/2), Math.round(n.y+n.r+3), C.label);
+  }
+  // the TOWN hubs — gold diamonds (distinct from the round farmer tokens), name below each
+  for (const n of townNodes){ const sel=n===selected, hov=n===hover, r=n.r;
+    sctx.fillStyle=n.col; sctx.beginPath();
+    sctx.moveTo(n.x,n.y-r); sctx.lineTo(n.x+r,n.y); sctx.lineTo(n.x,n.y+r); sctx.lineTo(n.x-r,n.y); sctx.closePath(); sctx.fill();
+    sctx.strokeStyle=(sel||hov)?'#fff':'#8a6b44'; sctx.lineWidth=1.5; sctx.stroke();
+    drawText(sctx,'TOWN', Math.round(n.x-textWidth('TOWN')/2), n.y-2, '#3a2c10');
+    const nm=n.name.toUpperCase(); drawText(sctx, nm, Math.round(n.x-textWidth(nm)/2), Math.round(n.y+r+3), C.sub);
+  }
+  // #nemesis the WAR hubs — blood-red diamonds, the named foe below (click for the battle documents)
+  for (const n of warNodes){ const sel=n===selected, hov=n===hover, r=n.r;
+    sctx.fillStyle=n.col; sctx.beginPath();
+    sctx.moveTo(n.x,n.y-r); sctx.lineTo(n.x+r,n.y); sctx.lineTo(n.x,n.y+r); sctx.lineTo(n.x-r,n.y); sctx.closePath(); sctx.fill();
+    sctx.strokeStyle=(sel||hov)?'#fff':'#7a2a20'; sctx.lineWidth=1.5; sctx.stroke();
+    drawText(sctx,'WAR', Math.round(n.x-textWidth('WAR')/2), n.y-2, '#2a0c08');
+    const nm=n.first.toUpperCase(); drawText(sctx, nm, Math.round(n.x-textWidth(nm)/2), Math.round(n.y+r+3), '#ff8a70');
+  }
+  sctx.restore();
+  if (hover && hover.type==='mem') tip(hover);
+  chrome();
+  if (panelX < GW-1) sheet();
+}
+
+// top title bar + bottom legend, drawn in the game's font like its HUD
+function chrome() {
+  drawText(sctx, 'VERDANT SIGNAL', 6, 6, C.title, 2);
+  drawText(sctx, "THE TOWN'S MEMORY", 6, 18, C.sub);
+  if (window._src) drawText(sctx, `${window._townCount||0} TOWNS - ${farmerNodes.length} FARMERS - ${window._ties||0} TIES - LIVE FROM COCKROACHDB`, 6, 27, C.dim);
+  const leg = 'CREED  BELIEF  MEMORY  RIFT   HOVER A DOT - CLICK A FARMER';
+  const ly = GH-9; let lx=6;
+  const swatch=(col)=>{ sctx.fillStyle=col; sctx.fillRect(lx,ly,3,3); lx+=6; };
+  swatch(C.creed); drawText(sctx,'CREED',lx,ly,C.dim); lx+=textWidth('CREED')+7;
+  swatch(C.belief); drawText(sctx,'BELIEF',lx,ly,C.dim); lx+=textWidth('BELIEF')+7;
+  swatch(C.mem); drawText(sctx,'MEMORY',lx,ly,C.dim); lx+=textWidth('MEMORY')+7;
+  swatch(C.rift); drawText(sctx,'RIFT',lx,ly,C.dim); lx+=textWidth('RIFT')+10;
+  drawText(sctx, townNodes.length?'CLICK A GOLD TOWN FOR ITS VOTING RECORD':'HOVER A DOT - CLICK A FARMER', lx, ly, C.dim);
+  if (window._empty) { const w=textWidth(window._empty); drawText(sctx, window._empty, Math.round(GW/2-w/2), Math.round(GH/2), C.sub); }
+}
+
+function tip(n) {
+  const lines=wrap(n.text, 96), lh=6, w=Math.min(112, Math.max(...lines.map(l=>textWidth(l)))+8), h=lines.length*lh+13;
+  let x=Math.round(n.x*view.z+view.x)+6, y=Math.round(n.y*view.z+view.y)+6;
+  if(x+w>GW-2) x=Math.round(n.x*view.z+view.x)-w-6; if(y+h>GH-2) y=GH-h-2;
+  panel(x,y,w,h);
+  drawText(sctx, (n.kind+' - '+n.parent.first).toUpperCase(), x+5, y+5, n.col);
+  lines.forEach((l,i)=> drawText(sctx, l, x+5, y+12+i*lh, C.label));
+}
+
+function buildSheet(n) {
+  const L=[];
+  if (n.type==='war') {   // #nemesis a WAR: its battle documents, oldest first, straight from CockroachDB
+    L.push({t:n.name.toUpperCase(), c:'#ff8a70', s:2});
+    L.push({t:`${n.battles.length} ${n.battles.length===1?'BATTLE':'BATTLES'} IN COCKROACHDB`, c:C.dim, s:1}); L.push({gap:4});
+    n.battles.forEach(b => {
+      String(b.text).split('\n').forEach((raw,i)=>{ const line=raw.trim(); if(!line) return;
+        wrap(line, PW-16).forEach((ln,k)=> L.push({t:ln, c: i===0 ? C.sub : C.label, bar: (i===0&&k===0) ? '#e05840' : null})); });
+      L.push({gap:5}); });
+    sheetLines=L; sheetScroll=0; sheetH=L.reduce((a,l)=>a+(l.gap||(l.s===2?12:7)),0); return;
+  }
+  if (n.type==='town') {   // the civic record: the town's political history, as CockroachDB holds it
+    L.push({t:n.name.toUpperCase(), c:C.sub, s:2}); L.push({t:"THE TOWN'S CIVIC RECORD", c:C.dim, s:1}); L.push({gap:4});
+    const fc=(n.farmers||[]).length; if(fc) L.push({t:`${fc} ${fc===1?'SETTLER':'SETTLERS'} REMEMBERED`, c:C.dim, s:1});
+    if (!n.text) { L.push({gap:3}); wrap('No civic record yet - this town has held no elections or recalls.', PW-16).forEach(ln=> L.push({t:ln, c:C.dim})); }
+    else for (const raw of String(n.text).split(/\n|(?= - )/)) {
+      const line=raw.trim(); if(!line) continue;
+      const bullet=line.startsWith('-'); const t=bullet?line.replace(/^-\s*/,''):line;
+      wrap(t, PW-16).forEach((ln,i)=> L.push({t:ln, c:i===0&&bullet?C.mem:C.label, bar:i===0&&bullet?'#e8c860':null}));
+    }
+    sheetLines=L; sheetScroll=0; sheetH=L.reduce((a,l)=>a+(l.gap||(l.s===2?12:7)),0); return;
+  }
+  L.push({t:n.name.toUpperCase(), c:C.title, s:2});
+  L.push({t:`${n.memories.length} ${n.memories.length===1?'MEMORY':'MEMORIES'} IN COCKROACHDB`, c:C.dim, s:1}); L.push({gap:4});
+  const sec=(title,kind,col)=>{ const arr=n.memories.filter(m=>kindOf(m)===kind); if(!arr.length) return;
+    L.push({t:title, c:C.sub, s:1});
+    arr.forEach(m=> wrap(m, PW-16).forEach((ln,i)=> L.push({t:ln, c:C.label, bar:i===0?col:null}))); L.push({gap:3}); };
+  sec('CREEDS','creed',C.creed); sec('HARD-WON BELIEFS','belief',C.belief); sec('WHAT THEY REMEMBER','mem',C.mem);
+  sheetLines=L; sheetScroll=0;
+  sheetH = L.reduce((a,l)=> a + (l.gap||(l.s===2?12:7)), 0);
+}
+function sheet() {
+  const x=Math.round(panelX), w=GW-x, top=2, h=GH-4;
+  panel(x, top, w-2, h);
+  // close chip
+  drawText(sctx, 'X', x+w-11, top+5, C.dim);
+  sctx.save(); sctx.beginPath(); sctx.rect(x+5, top+5, w-12, h-10); sctx.clip();
+  let y=top+6-sheetScroll;
+  for (const l of sheetLines){ if(l.gap){ y+=l.gap; continue; }
+    if(l.bar){ sctx.fillStyle=l.bar; sctx.fillRect(x+6, y, 1, 5); }
+    drawText(sctx, l.t, x+(l.bar?10:7), y, l.c, l.s||1); y += l.s===2?12:7;
+  }
+  sctx.restore();
+}
+
+// ---- interaction (internal-pixel coords) ----
+let dragNode=null, panning=null, downAt=null;
+function ptr(e){ return { x:e.clientX/window.innerWidth*GW, y:e.clientY/window.innerHeight*GH }; }
+function world(e){ const p=ptr(e); return { x:(p.x-view.x)/view.z, y:(p.y-view.y)/view.z }; }
+function overSheet(e){ return panelX<GW-1 && ptr(e).x>panelX; }
+function hit(e){ const p=world(e);
+  for (const n of farmerNodes) if(Math.hypot(n.x-p.x,n.y-p.y)<=n.r+2) return n;
+  for (const n of warNodes) if(Math.hypot(n.x-p.x,n.y-p.y)<=n.r+2) return n;
+  for (const n of townNodes) if(Math.hypot(n.x-p.x,n.y-p.y)<=n.r+2) return n;
+  for (const n of nodes) if(n.type==='mem' && Math.hypot(n.x-p.x,n.y-p.y)<=n.r+2) return n;
+  return null; }
+function far(e){ return downAt && Math.hypot(e.clientX-downAt.x, e.clientY-downAt.y) > 4; }
+
+out.addEventListener('mousedown', e=>{ downAt={x:e.clientX,y:e.clientY}; if(overSheet(e)) return;
+  const n=hit(e); if(n&&n.type==='farmer'){ dragNode=n; } else if(!n){ const p=ptr(e); panning={x:p.x-view.x,y:p.y-view.y}; } });
+out.addEventListener('mousemove', e=>{ hover=overSheet(e)?null:hit(e); out.style.cursor=hover?'pointer':(panning?'grabbing':'grab');
+  if(dragNode&&far(e)){ const p=world(e); dragNode.x=p.x; dragNode.y=p.y; dragNode.vx=dragNode.vy=0; reheat(0.3); }
+  else if(panning){ const p=ptr(e); view.x=p.x-panning.x; view.y=p.y-panning.y; } });
+addEventListener('mouseup', e=>{ if(!far(e)){
+    if(overSheet(e)){ const p=ptr(e); if(p.x>GW-14 && p.y<18) closeSheet(); }
+    else { const n=hit(e); if(n){ select(n.type==='mem'?n.parent:n); } else if(selected) closeSheet(); } }
+  dragNode=null; panning=null; downAt=null; });
+out.addEventListener('wheel', e=>{ e.preventDefault();
+  if(overSheet(e)){ sheetScroll=Math.max(0, Math.min(sheetScroll+e.deltaY*0.35, Math.max(0, sheetH-(GH-16)))); return; }
+  const p=ptr(e), s=Math.exp(-e.deltaY*0.001);
+  view.x=p.x-(p.x-view.x)*s; view.y=p.y-(p.y-view.y)*s; view.z=Math.max(0.5,Math.min(3,view.z*s)); }, {passive:false});
+addEventListener('keydown', e=>{ if(e.key==='Escape') closeSheet(); });
+function select(n){ selected=n; buildSheet(n); }
+function closeSheet(){ selected=null; }
+
+load();
+</script>
+</body>
+</html>
