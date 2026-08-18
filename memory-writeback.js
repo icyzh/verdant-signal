@@ -185,6 +185,7 @@ export function lifeOf(f) {   // #memory-backfill shares this compiler — one l
         dream: s.dream ? s.dream.yearn : null,
         sourceTitle: (s.memory && s.memory.title) || null,
         sourceDocId: (s.memory && s.memory.id) || null,
+        lineage: s.lineage ? { ...s.lineage } : null,
         creeds: (f.creeds || []).map(c => c.quote || c.short).filter(Boolean),
         beliefs: (f.beliefs || []).map(b => b.text),
         episodic,
@@ -197,7 +198,8 @@ export function lifeOf(f) {   // #memory-backfill shares this compiler — one l
 // overwrites the same doc (no pile-up), and the read side still excludes these, so no echo loop.
 function lifeSig(f) {
     const l = lifeOf(f);
-    return `${l.beliefs.length}|${l.creeds.length}|${l.episodic.join('¦')}`;
+    const lineage = l.lineage ? `${l.lineage.ofTownSeed ?? ''}:${l.lineage.ofFarmerSeed ?? ''}` : '';
+    return `${lineage}|${l.beliefs.length}|${l.creeds.length}|${l.episodic.join('¦')}`;
 }
 
 // Persist each farmer whose life has CHANGED since it was last written. `isCurrent` guards a response

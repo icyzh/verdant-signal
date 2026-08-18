@@ -37,10 +37,31 @@ function vectorLiteral(v) {
     return `[${v.join(',')}]`;
 }
 
+// ponytail: lexical feature hashing is the free baseline; use provider=bedrock when semantic recall matters.
+// Word and adjacent-word features preserve useful lexical
+// similarity while the signed buckets keep collisions from only adding noise. Normalizing makes
+// distances comparable across short creeds and long civic records.
+function localEmbedding(text) {
+    const words = String(text).toLowerCase().match(/[a-z0-9]+/g) || [];
+    const features = words.concat(words.slice(1).map((word, i) => `${words[i]}:${word}`));
+    const vector = Array(VECTOR_DIMS).fill(0);
+    for (const feature of features.length ? features : ['empty']) {
+        let hash = 2166136261;
+        for (let i = 0; i < feature.length; i++) hash = Math.imul((hash ^ feature.charCodeAt(i)) >>> 0, 16777619) >>> 0;
+        vector[hash % VECTOR_DIMS] += (hash & 0x100) ? 1 : -1;
+    }
+    const norm = Math.hypot(...vector) || 1;
+    return vector.map(value => value / norm);
+}
+
 async function embed(text) {
     const fake = testAdapter();
     if (fake?.embed) return fake.embed(text);
-    if (!process.env.AWS_REGION || process.env.MEMORY_EMBEDDINGS_OFF === '1') return null;
+    const provider = String(process.env.MEMORY_EMBEDDING_PROVIDER || 'local').toLowerCase();
+    if (process.env.MEMORY_EMBEDDINGS_OFF === '1' || provider === 'off') return null;
+    if (provider === 'local') return localEmbedding(text);
+    if (provider !== 'bedrock') throw new Error(`unsupported memory embedding provider: ${provider}`);
+    if (!process.env.AWS_REGION) throw new Error('AWS_REGION is required for Bedrock embeddings');
     const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
     const client = globalThis.__ryFarmsBedrock ||= new BedrockRuntimeClient({ region: process.env.AWS_REGION });
     const out = await client.send(new InvokeModelCommand({
@@ -100,11 +121,11 @@ async function lineage(owner, townSeed, query) {
     let vector = null;
     try { vector = vectorLiteral(await embed(query)); } catch (error) { console.warn('[memory] query embedding failed:', error?.message || error); }
     const sql = vector
-        ? `SELECT memory_key, payload FROM agent_memories
+        ? `SELECT memory_key, town_seed, payload FROM agent_memories
            WHERE kind = 'farmer-life' AND embedding IS NOT NULL
              AND NOT (owner_id = $2 AND town_seed = $3)
            ORDER BY embedding <-> $1::VECTOR LIMIT 100`
-        : `SELECT memory_key, payload FROM agent_memories
+        : `SELECT memory_key, town_seed, payload FROM agent_memories
            WHERE kind = 'farmer-life' AND NOT (owner_id = $1 AND town_seed = $2)
            ORDER BY updated_at DESC, memory_key LIMIT 100`;
     const args = vector ? [vector, owner, townSeed] : [owner, townSeed];
@@ -121,4 +142,4 @@ async function graphRows() {
         FROM agent_memories ORDER BY updated_at DESC LIMIT 2000`)).rows;
 }
 
-module.exports = { ownerId, embed, upsert, attachEmbedding, lineage, graphRows, VECTOR_DIMS };
+module.exports = { ownerId, embed, localEmbedding, upsert, attachEmbedding, lineage, graphRows, VECTOR_DIMS };

@@ -27,7 +27,8 @@ CockroachDB stores the readable memory, its structured game payload, and its vec
 transactional row. Verdant Signal uses it as a full **read → compile → write → re-read loop**:
 
 1. **Grow from memory (read).** `api/knowledge-graph.js` uses CockroachDB's distributed
-   vector index to retrieve relevant former lives. The existing lineage compiler turns a
+   vector index to retrieve relevant former lives. Free local feature-hash embeddings are the
+   default; Amazon Bedrock remains an optional semantic provider. The lineage compiler turns a
    forebear's creed, dream, and archetype into a deterministic colonist.
 2. **Memory is load-bearing (proof).** `node tests/ablation.mjs` founds three colonies
    from the *same seed* but different memory sources (real corpus / shuffled / invented)
@@ -94,9 +95,14 @@ Apply `db/001_agent_memories.sql` to a CockroachDB 25.4+ cluster, then set:
 
 ```bash
 DATABASE_URL=postgresql://...               # CockroachDB TLS connection string
-AWS_REGION=us-east-1                        # optional: Titan vector embeddings
-# MEMORY_EMBEDDINGS_OFF=1                   # structured memory only
+MEMORY_EMBEDDING_PROVIDER=local             # free, dependency-free VECTOR(256) embeddings (default)
+# MEMORY_EMBEDDING_PROVIDER=bedrock          # optional Amazon Titan provider
+# AWS_REGION=us-east-1
+# MEMORY_EMBEDDINGS_OFF=1                    # structured memory only
 ```
+
+Keep one embedding provider per dataset. Switching providers requires re-embedding existing rows because
+vectors produced by different providers do not share a distance space.
 
 Compile-don't-query: the corpus is pulled ONCE at colony founding; the sim never calls
 CockroachDB mid-tick. Without a database, browser IndexedDB and the embedded crew remain

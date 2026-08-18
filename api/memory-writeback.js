@@ -133,6 +133,8 @@ function townInventionsDoc(ti, town) {
 function lifeDoc(f, town) {
     const lines = [`${f.name || 'A settler'} — a ${f.archetype || 'farmer'} of ${town || 'the valley'}.`];
     if (f.sourceTitle) lines.push(`Grown from the memory: "${String(f.sourceTitle).slice(0, 120)}".`);
+    if (f.lineage?.ofName) lines.push(`Descended from ${String(f.lineage.ofName).slice(0, 120)}` +
+        `${f.lineage.ofTown ? ` of ${String(f.lineage.ofTown).slice(0, 120)}` : ''}.`);
     if (f.dream) lines.push(`Their dream: ${f.dream}.`);
     if (Array.isArray(f.creeds) && f.creeds.length) { lines.push('Creeds they live by:'); for (const c of f.creeds.slice(0, 6)) lines.push(` - ${c}`); }
     if (Array.isArray(f.beliefs) && f.beliefs.length) { lines.push('Beliefs they have earned:'); for (const b of f.beliefs.slice(0, 8)) lines.push(` - ${b}`); }

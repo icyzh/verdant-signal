@@ -3,7 +3,7 @@
 // first line, while the queue-only test stayed green — module-level coverage of the actual
 // exported writers is the regression net).
 // Run: node tests/writeback-smoke.mjs
-import { persistLives, persistTownHistory, persistBattle } from '../memory-writeback.js';
+import { lifeOf, persistLives, persistTownHistory, persistBattle } from '../memory-writeback.js';
 import { _setBackendForTests } from '../memory-store.js';
 
 const mem = new Map();
@@ -18,7 +18,8 @@ let pass = true; const ok = (c, m) => { console.log((c ? '  ✓ ' : '  ✗ FAIL 
 
 function stubFarmer(seed, name) {
     return {
-        sheet: { seed, name, archetype: 'builder', dream: { yearn: 'a roof' }, memory: { title: 'The first frost', id: 'doc1' } },
+        sheet: { seed, name, archetype: 'builder', dream: { yearn: 'a roof' }, memory: { title: 'The first frost', id: 'doc1' },
+            lineage: { ofName: 'Ilya Reed', ofTown: 'Verdant Reach', ofTownSeed: '424242', creed: 'Repair first' } },
         journal: [{ text: 'stood with Truss at the fence', strength: 3 }, { text: 'the storm took the north field', strength: 2 }, { text: 'planted the first row', strength: 1 }],
         creeds: [{ quote: 'I hold the line', short: 'hold' }],
         beliefs: [{ text: 'second place is just the first to be forgotten' }],
@@ -39,6 +40,7 @@ console.log('1 — persistLives runs, stamps on local success, stores the docs')
     ok(stamped === 2, `stamped both lives (${stamped})`);
     ok(world.farmers.every(f => f.sheet.lifePersisted && f.sheet.lifeSig), 'lifePersisted + lifeSig stamped');
     ok(mem.has('life:4242:1') && mem.has('life:4242:2'), 'both life docs in the store');
+    ok(lifeOf(world.farmers[0]).lineage?.ofTownSeed === '424242', 'second-generation provenance rides writeback');
     ok(logs.some(t => /long memory/.test(t)), 'the on-screen receipt fired');
     const again = await persistLives(world, () => true);
     ok(again === 0, 'unchanged lives are not re-persisted (sig gate)');

@@ -13,11 +13,13 @@ DATABASE_URL=postgresql://...  # CockroachDB TLS URL
 Optional services:
 
 ```sh
-PINECONE_API_KEY=...           # reserved for Pinecone embedding inference
 OPENAI_API_KEY=...             # expressive dialogue only
 OPENAI_BASE_URL=...            # any OpenAI-compatible endpoint
 RY_FARMS_LLM_MODEL=...
-MEMORY_EMBEDDINGS_OFF=1        # structured CockroachDB memory without embeddings
+MEMORY_EMBEDDING_PROVIDER=local # free dependency-free VECTOR(256) embeddings (default)
+# MEMORY_EMBEDDING_PROVIDER=bedrock
+# AWS_REGION=us-east-1
+# MEMORY_EMBEDDINGS_OFF=1      # structured CockroachDB memory without embeddings
 ```
 
 Apply `db/001_agent_memories.sql` before enabling database-backed memory. Secrets belong in the hosting

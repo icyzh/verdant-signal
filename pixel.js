@@ -42,7 +42,7 @@ const FONT = {
     '<': '001010100010001', '>': '100010001010100', '*': '101010111010101',
     '_': '000000000000111', '&': '010101010101011', '#': '101111101111101',
     '^': '010101000000000', '~': '000011110000000',
-    '[': '110100100100110', ']': '011001001001011',   // the raid marquee's [W] hint rendered as ?W? without these
+    '[': '110100100100110', ']': '011001001001011',   // the raid marquee's [E] hint rendered as ?E? without these
 };
 
 // fold typographic characters the 3x5 font lacks onto plain equivalents (em/en-dash -> hyphen,

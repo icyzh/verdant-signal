@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const knowledge = require('../api/knowledge-graph.js');
 const graph = require('../api/memory-graph.js');
+const memory = require('../api/_memory-db.js');
 
 let pass = true;
 const ok = (condition, message) => { console.log((condition ? '  ✓ ' : '  ✗ FAIL ') + message); if (!condition) pass = false; };
@@ -16,9 +17,29 @@ const lifeRow = {
 };
 
 const lineage = knowledge.toLineage(lifeRow);
-ok(lineage?.name === 'Rivet Stone' && lineage.creed === 'Raise it together' && lineage.town === 'STARBLOOM',
+ok(lineage?.name === 'Rivet Stone' && lineage.creed === 'Raise it together' && lineage.town === 'STARBLOOM'
+    && lineage.townSeed === '42',
     'structured life maps to lineage without prose parsing');
 ok(knowledge.toLineage({ payload: { life: { name: 'Creedless' } } }) === null, 'creedless life is not inheritable');
+
+const repair = memory.localEmbedding('repair tools in the community workshop');
+const related = memory.localEmbedding('the community shares tools for repair');
+const unrelated = memory.localEmbedding('raiders crossed the frozen eastern wall');
+const distance = (a, b) => Math.hypot(...a.map((value, i) => value - b[i]));
+ok(repair.length === 256 && repair.every(Number.isFinite), 'free local embedding is a valid VECTOR(256)');
+ok(distance(repair, related) < distance(repair, unrelated), 'free local embedding ranks related text closer');
+const oldProvider = process.env.MEMORY_EMBEDDING_PROVIDER, oldOff = process.env.MEMORY_EMBEDDINGS_OFF;
+delete process.env.MEMORY_EMBEDDINGS_OFF;
+process.env.MEMORY_EMBEDDING_PROVIDER = 'local';
+ok((await memory.embed('repair')).length === 256, 'local provider selects the free embedder');
+process.env.MEMORY_EMBEDDING_PROVIDER = 'off';
+ok(await memory.embed('repair') === null, 'off provider disables embeddings');
+process.env.MEMORY_EMBEDDING_PROVIDER = 'unknown';
+let refusedUnknown = false;
+try { await memory.embed('repair'); } catch { refusedUnknown = true; }
+ok(refusedUnknown, 'unknown provider fails closed');
+if (oldProvider === undefined) delete process.env.MEMORY_EMBEDDING_PROVIDER; else process.env.MEMORY_EMBEDDING_PROVIDER = oldProvider;
+if (oldOff === undefined) delete process.env.MEMORY_EMBEDDINGS_OFF; else process.env.MEMORY_EMBEDDINGS_OFF = oldOff;
 
 const towns = graph.shape([
     lifeRow,

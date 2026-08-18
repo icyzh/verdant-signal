@@ -8057,7 +8057,7 @@ out.addEventListener('wheel', (e) => {
 // The most watch-worthy farmer right now: someone in a fight, fleeing, downed, rushing to help,
 // or staking a claim outranks the routine — so 'jump to the action' lands on real drama.
 // B4 — witnessable drama: watch the chronicle for a NEW dramatic beat and, if its farmer exists,
-// remember them as the current spotlight so we can point the player at the action ('W' to watch).
+// remember them as the current spotlight so we can point the player at the action ('E' to watch).
 function updateDramaSpotlight() {
     const ch = world.chronicle;
     if (lastChronLen < 0) { lastChronLen = ch.length; return; }   // ignore the pre-existing backlog on load
@@ -8073,7 +8073,7 @@ function spotlightFarmer() {
     if (!dramaSpotlight || performance.now() - dramaSpotlight.t > 6500) return null;   // cue fades after ~6.5s
     return world.farmers.find(x => x.sheet.seed === dramaSpotlight.seed) || null;
 }
-// A pulsing arrow + label at the screen edge pointing to an OFF-SCREEN spotlight farmer, with a [W] hint.
+// A pulsing arrow + label at the screen edge pointing to an OFF-SCREEN spotlight farmer, with an [E] hint.
 // Never grabs the camera — the player chooses to look (observer identity).
 function drawDramaCue() {
     const f = spotlightFarmer(); if (!f || (followMode && followTarget === f)) return;
@@ -8091,8 +8091,8 @@ function drawDramaCue() {
     ctx.lineTo(ax + Math.cos(ang + 2.5) * s, ay + Math.sin(ang + 2.5) * s);
     ctx.lineTo(ax + Math.cos(ang - 2.5) * s, ay + Math.sin(ang - 2.5) * s);
     ctx.closePath(); ctx.fill();
-    // [emblem] label [W] — the emblem says WHAT the beat is at a glance (distinct per kind), the keycap says how to
-    // jump to it. Layout: 9px emblem + gap, the label, a gap, a small bordered W keycap.
+    // [emblem] label [E] — the emblem says WHAT the beat is at a glance (distinct per kind), the keycap says how to
+    // jump to it. Layout: 9px emblem + gap, the label, a gap, a small bordered E keycap.
     const txt = dramaSpotlight.label, tw = textWidth(txt);
     const EMB = 10, KEY = 9, boxW = EMB + tw + 3 + KEY;
     const lx = Math.max(4, Math.min(GW - boxW - 4, ax - Math.cos(ang) * 10 - boxW / 2));
@@ -8101,11 +8101,11 @@ function drawDramaCue() {
     ctx.fillStyle = 'rgba(16,14,10,0.82)'; ctx.fillRect(bx - 2, by - 2, boxW + 3, 10);
     drawCueEmblem(dramaSpotlight.kind, bx, by - 1);
     drawText(ctx, txt, bx + EMB, by, '#f0d060');
-    // the W keycap (a hairline box so it reads as a KEY, not a letter in the phrase)
+    // the E keycap (a hairline box so it reads as a KEY, not a letter in the phrase)
     const kx = bx + EMB + tw + 3;
     ctx.fillStyle = 'rgba(240,208,96,0.6)'; ctx.strokeStyle = 'rgba(240,208,96,0.6)';
     ctx.fillRect(kx - 1, by - 2, KEY, 9);
-    drawText(ctx, 'W', kx, by, '#16120a');
+    drawText(ctx, 'E', kx, by, '#16120a');
 }
 // #drama-cue a tiny (≈8px) per-kind emblem so the edge cue reads at a glance — like the watcher's eye.
 // peril = a red danger spike; a hunt = a tan paw; a theft = a masked/hooded face. Pure fillRect for crisp low-res.
@@ -8214,7 +8214,7 @@ function drawThreatTell() {
     const foe = pr.e && pr.e.foe;
     const label = (foe
         ? (hot ? `${foe.name.toUpperCase()} CLOSES FROM THE ${pr.dirName.toUpperCase()} - RALLY` : `${foe.name.toUpperCase()} RETURNS - RAID ${foe.raidCount} OF HIS WAR`)
-        : (hot ? `RAIDERS CLOSING FROM THE ${pr.dirName.toUpperCase()} - RALLY` : `A WARBAND GATHERS TO THE ${pr.dirName.toUpperCase()}`)) + ' [W]';   // W jumps the camera there
+        : (hot ? `RAIDERS CLOSING FROM THE ${pr.dirName.toUpperCase()} - RALLY` : `A WARBAND GATHERS TO THE ${pr.dirName.toUpperCase()}`)) + ' [E]';   // E jumps the camera there
     const tw = textWidth(label), bx = Math.round(GW / 2 - tw / 2), by = 22;
     ctx.fillStyle = `rgba(20,10,8,${0.7 + 0.15 * pulse})`;
     ctx.fillRect(bx - 5, by - 2, tw + 10, 11);
@@ -8272,6 +8272,12 @@ window.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (resumeCard) { resumeCard = null; return; }   // any key dismisses the catch-up card
     if (faceoff) { faceoff = null; return; }          // #faceoff any key dismisses the post-raid VS card
+    const pan = { w: [0, 24], a: [24, 0], s: [0, -24], d: [-24, 0] }[e.key.toLowerCase()];
+    if (pan && world && booted) {
+        followMode = false; followTarget = null;
+        cam.x += pan[0]; cam.y += pan[1];
+        e.preventDefault(); return;
+    }
     if ((e.key === 't' || e.key === 'T') && world) {
         followMode = false; followTarget = null;
         cam.x = GW / 2 - isoX(world.well.i, world.well.j);
@@ -8285,16 +8291,16 @@ window.addEventListener('keydown', (e) => {
             if (target) { followMode = true; followTarget = target; selected = target; sheetScroll = 0; sheetTab = 0; rosterOpen = false; chronOpen = false; boardOpen = false; funnelFollow(); }
         }
     }
-    // W — WATCH: jump to follow the current off-screen drama the cue is pointing at
-    if ((e.key === 'w' || e.key === 'W') && world && booted) {
-        // a live raid outranks the spotlight — W snaps (or re-snaps) the camera to the warband
+    // E — WATCH: jump to follow the current off-screen drama the cue is pointing at
+    if ((e.key === 'e' || e.key === 'E') && world && booted) {
+        // a live raid outranks the spotlight — E snaps (or re-snaps) the camera to the warband
         if (world.raidEvent) {
             const rr = world.raidEvent.raiders || [];
             const fr = (world.raidEvent.focus && !world.raidEvent.focus.fell) ? world.raidEvent.focus : rr[0];
             const spot = fr ? { i: fr.i, j: fr.j } : (world.well ? { i: world.well.i, j: world.well.j } : null);
             if (spot) { raidFocus = spot; followMode = false; followTarget = null; rosterOpen = false; chronOpen = false; boardOpen = false; }
         } else if (world.pendingRaid) {
-            // #raid-feel the TELEGRAPH answers W too (player: "hit W to go there"): jump to where the
+            // #raid-feel the TELEGRAPH answers E too (player: "hit E to go there"): jump to where the
             // warband is gathering — the seeded edge point in pr.dir the muster figures stand on.
             const pr = world.pendingRaid, co = Math.cos(pr.dir), si = Math.sin(pr.dir), m = 4;
             const tx = co > 0 ? (GRID - m - CENTER) / co : co < 0 ? (m - CENTER) / co : Infinity;
