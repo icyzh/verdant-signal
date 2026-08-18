@@ -1,0 +1,9 @@
+{
+  "name": "verdant-signal",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.883.0",
+    "pg": "^8.16.3"
+  }
+}

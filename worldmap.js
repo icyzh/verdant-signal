@@ -1,0 +1,228 @@
+// worldmap.js — #2 THE WORLD OF TOWNS (the camera tier above a single town).
+//
+// A town's sim is the reproducible substrate; the WORLD is the living layer on top. This module is pure model
+// + geometry over the world index (save.js): where each town sits in a shared coordinate space, how far its
+// influence REACHES (grows with the town), which towns DESCEND from which (the lineage graph — the closed
+// memory loop drawn at world scale), and which towns have grown far enough to MEET. On an encounter, a creed
+// travels between them — the world itself becomes a memory-propagation medium (#2.4). Nothing here feeds a
+// town's seeded sim; it's display/persistence only, the same boundary as the LLM/shader side-channels.
+
+import { hashString } from './dna.js';
+import { lineagePairKey, isCrossFaction, foldDisposition, dispositionTier, resolveEncounter, applyOutcome, ledgerCount, seedTraveler, seedNews, newsLine, doctrineDef, TRAVELER } from './reconciliation.js';
+
+const WORLD_W = 1000, WORLD_H = 640;   // abstract world-plane units (the map view scales these to the screen)
+
+// Deterministic scatter: a town's world position is fixed by its seed, so the map is stable across visits.
+// A little hash-jitter on two axes spreads them; the map view re-centers/zooms to fit whatever exists.
+export function townPos(seed) {
+    const hx = hashString('wx:' + (seed >>> 0)) / 0xffffffff;
+    const hy = hashString('wy:' + (seed >>> 0)) / 0xffffffff;
+    return { x: 40 + hx * (WORLD_W - 80), y: 40 + hy * (WORLD_H - 80) };
+}
+
+// A town's REACH grows as it thrives — population, age, and cumulative harvest push its traders/settlers
+// outward (the plan's "towns venture outward via the expansion system"). Two towns MEET when reaches overlap.
+export function townReach(t) {
+    const pop = t.pop || 0, day = t.day || 0, harv = t.harvestTotal || 0;
+    return Math.min(260, 46 + pop * 5 + Math.sqrt(day) * 6 + Math.sqrt(harv) * 1.6);
+}
+
+// Memory-derived tint (#5.1 seed): the town's palette hue comes from the fingerprint of its founding memories,
+// so a town literally wears the color of what it was grown from. Warm/cool falls out of the hash; saturation
+// lifts with how much the town has lived. #3.2/#5.3: an ORC warband is rendered as atmosphere — ashen and
+// blood-red, the tension made visible at a glance against the verdant human towns.
+export function townTint(t) {
+    if (t.culture === 'orc') {
+        const hue = 2 + ((t.fingerprint >>> 0) % 14);   // narrow red band, ashen
+        return { h: hue, s: 52, l: 40, css: `hsl(${hue} 52% 44%)`, cssDim: `hsl(${hue} 40% 24%)`, orc: true };
+    }
+    const hue = ((t.fingerprint >>> 0) % 360);
+    const sat = 45 + Math.min(30, (t.harvestTotal || 0) / 200);
+    return { h: hue, s: sat, l: 58, css: `hsl(${hue} ${sat}% 58%)`, cssDim: `hsl(${hue} ${sat}% 30%)`, orc: false };
+}
+
+// The full render model for the map: every town with its position, reach, tint, and lineage edges (an edge
+// points from a town to an ANCESTOR town it was founded from — drawn only when the ancestor is also known).
+export function computeLayout(index) {
+    const towns = Object.values(index?.towns || {});
+    const known = new Set(towns.map(t => String(t.seed)));
+    const nodes = towns
+        .sort((a, b) => a.seed - b.seed)   // stable order
+        .map(t => ({
+            seed: t.seed, name: t.name || `Town ${t.seed}`, pop: t.pop || 0, day: t.day || 0, year: t.year || 1,
+            harvestTotal: t.harvestTotal || 0, motto: t.motto || null, lastSeen: t.lastSeen || 0,
+            culture: t.culture === 'orc' ? 'orc' : 'human', envoy: t.envoy || null, lineageRoot: t.lineageRoot != null ? String(t.lineageRoot) : String(t.seed),
+            doctrine: t.doctrine || 'comitatus',   // #doctrine (fallback for pre-doctrine summaries)
+            ...townPos(t.seed), reach: townReach(t), tint: townTint(t),
+            // edges to ancestor towns that we actually have on the map (skip lineage from unknown/foreign towns)
+            ancestors: (t.lineage || []).map(String).filter(s => s !== String(t.seed) && known.has(s)),
+        }));
+    return nodes;
+}
+
+const pairKey = (a, b) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+
+// Detect NEW encounters: any two towns whose reaches now overlap and that haven't met before. Appends an
+// encounter event (with a creed CARRIED from each town to the other — #2.4) to the index. Returns the list of
+// newly-created encounters so the caller can surface them. Idempotent: a met pair is never re-created.
+export const WORLD_INDEX_VERSION = 3;   // v3 adds pairs[] (traveler awareness state machine); v1/v2 still load
+const ENCOUNTER_HISTORY_CAP = 120;      // #Codex24-4 index.encounters is a capped presentation log; dedup lives in metPairs
+
+// Queue a structured event into a town's inbox (the world->sim crossing; the town consumes it deterministically
+// at load/dawn). Keyed by town seed so a dormant town gets its due when it's next played.
+function queueInbox(index, townSeed, ev) {
+    index.inbox = index.inbox || {};
+    // stable id so the town can apply each event EXACTLY ONCE even if a crash leaves it uncleared (Codex r20 P1)
+    ev.id = ev.id || `${ev.pairKey}:${ev.ordinal}:${ev.kind}`;
+    (index.inbox[String(townSeed)] = index.inbox[String(townSeed)] || []).push(ev);
+}
+
+export function detectEncounters(index) {
+    const nodes = computeLayout(index);
+    // #Codex24-4: the DURABLE, COMPACT met-set (a set of pair-key strings). Previously the met check was derived
+    // from index.encounters — which forced that array to be kept forever (a fat presentation record doubling as
+    // the dedup key). metPairs is the minimal durable state; index.encounters is now purely presentation and can
+    // be capped. Migrate legacy indexes (metPairs absent) by seeding it from the existing encounter history.
+    if (!index.metPairs) { index.metPairs = {}; for (const e of (index.encounters || [])) index.metPairs[pairKey(String(e.a), String(e.b))] = 1; }
+    const met = new Set(Object.keys(index.metPairs));
+    index.ledgers = index.ledgers || {};       // #reconciliation: per faction-lineage-pair grievance/reconciliation record
+    index.pairs = index.pairs || {};           // Slice B: per town-pair awareness state (unknown->rumored->aware->met)
+    // Codex #22.3 — GC records orphaned by a wiped town (endpoints no longer in the index): bounds pair/news growth.
+    const live = new Set(Object.keys(index.towns || {}));
+    for (const k of Object.keys(index.pairs)) { const [a, b] = k.split(':'); if (!live.has(a) || !live.has(b)) delete index.pairs[k]; }
+    for (const k of Object.keys(index.metPairs)) { const [a, b] = k.split(':'); if (!live.has(a) || !live.has(b)) delete index.metPairs[k]; }   // #Codex24-4 GC met-set too
+    if (Array.isArray(index.news)) index.news = index.news.filter(n => live.has(String(n.origin)) && live.has(String(n.destination)));
+    // #Codex24-4: drop inbox buckets that are empty (left behind after consumption) or belong to a wiped town —
+    // else they accumulate forever. A live town's PENDING events are kept (they're due work, not garbage).
+    if (index.inbox) for (const k of Object.keys(index.inbox)) { const b = index.inbox[k]; if (!live.has(k) || !Array.isArray(b) || b.length === 0) delete index.inbox[k]; }
+    const fresh = [];
+    for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {
+        const A = nodes[i], B = nodes[j];
+        const key = pairKey(String(A.seed), String(B.seed));
+        if (met.has(key)) continue;
+        // F2: exact squared-distance geometry now that overlap is outcome-bearing (no Math.hypot rounding).
+        const dx = A.x - B.x, dy = A.y - B.y, d2 = dx * dx + dy * dy, rr = A.reach + B.reach;
+
+        // ── Slice B: RUMOR phase — when a pair first drifts within the (wider) rumor radius, a traveler sets
+        // out. Its whole fate + arrival sim-day is decided NOW as a pure fn; the map marker just walks toward
+        // it. The traveler inbox event goes to the DESTINATION (asymmetric: only they learn). NO raid gating
+        // yet (Slice C) — the existing encounter logic below still runs unchanged.
+        const rumorR = rr * TRAVELER.rumorMult;
+        if (!index.pairs[key] && d2 <= rumorR * rumorR) {
+            const discoveryDay = Math.max(A.day, B.day), dist = Math.sqrt(d2);
+            const t = seedTraveler({
+                pairKey: key, ordinal: 0, aSeed: A.seed, bSeed: B.seed, aCulture: A.culture, bCulture: B.culture,
+                aName: A.name, bName: B.name, ax: A.x, ay: A.y, bx: B.x, by: B.y, discoveryDay, dist,
+                aScouts: doctrineDef(A.doctrine).scouts, bScouts: doctrineDef(B.doctrine).scouts,   // #doctrine scouting posture
+            });
+            index.pairs[key] = { state: 'enRoute', origin: t.origin, destination: t.destination, fate: t.fate, lostAt: t.lostAt,
+                discoveryDay, arrivalDay: t.arrivalDay, warning: t.warning, bearing: t.bearing, fromCulture: t.fromCulture };
+            // Slice C: a LOST traveler delivers nothing — no inbox event, so the destination never learns and
+            // the pair meets by surprise (base curiosity, no parley boost). Only a survivor's warning arrives.
+            if (t.fate === 'arrives') queueInbox(index, t.destination, { kind: 'traveler', pairKey: key, ordinal: 0, day: t.arrivalDay,
+                payload: { type: 'warning', origin: String(t.origin), fromCulture: t.fromCulture, warning: t.warning, bearing: t.bearing } });
+        }
+
+        if (d2 > rr * rr) continue;              // not yet within reach of each other
+        met.add(key); index.metPairs[key] = 1;   // #Codex24-4 record in the durable met-set (survives an encounter-history cap)
+        (index.pairs[key] = index.pairs[key] || {}).state = 'met';   // Slice D: the traveler marker retires once they actually meet
+        const day = Math.max(A.day, B.day);
+
+        if (!isCrossFaction(A, B)) {
+            // same-culture neighbours meet in peace and swap a motto (#2.4 cross-town memory)
+            fresh.push({ a: A.seed, b: B.seed, day, at: Date.now(), aName: A.name, bName: B.name, kind: 'meeting', aCarried: A.motto || null, bCarried: B.motto || null });
+            continue;
+        }
+
+        // #reconciliation cross-faction: RESOLVE through the seeded model over the LINEAGE-pair ledger, so a
+        // gen-1 raid and a gen-3 parley compound. raid | parley-honored | parley-betrayed.
+        const human = A.culture === 'orc' ? B : A, orc = A.culture === 'orc' ? A : B;
+        const lpk = lineagePairKey(A, B);
+        const led = index.ledgers[lpk] || { raidN: 0, betrayalN: 0, reconcileN: 0, recent: [], tier: 'hostile', firstTrustDone: false };   // #Codex24-4 compact counter form
+        const disposition = foldDisposition(led);
+        const tier = dispositionTier(disposition, led.tier || 'hostile');
+        const ordinal = ledgerCount(led);   // #Codex24-4 monotonic ordinal from counters (was grievances+reconciliations length)
+        const res = resolveEncounter({
+            pairKey: lpk, ordinal, disposition, tier,
+            humanEnvoy: human.envoy || { seed: human.seed }, orcEnvoy: orc.envoy || { seed: orc.seed },
+        });
+        const shortH = String(human.name).split(' ')[0], shortO = String(orc.name).split(' ')[0];
+        // #Codex30 P1 — a PALISADE raider (commit 0) never actually marches. The seeded model may resolve 'raid',
+        // but a town that learned to hold the wall (#134) doesn't attack — so a zero-commit "raid" is a bloodless
+        // STANDOFF, not a phantom raid. Leave the ledger/tier EXACTLY as they were (no grievance), queue NO inbox
+        // (the victim used to get a raid that stole 0 stores yet still counted a raid + chronicle + monuments, and
+        // two of them could teach a false lesson), and skip news propagation. The pair is already marked met above.
+        if (res.outcome === 'raid' && doctrineDef(orc.doctrine).commit <= 0) {
+            fresh.push({ a: orc.seed, b: human.seed, day, at: Date.now(), aName: orc.name, bName: human.name, kind: 'standoff',
+                         aCarried: `${shortO} held their ground and did not march`, bCarried: `${shortH} was left in peace` });
+            continue;
+        }
+        const nextLed = applyOutcome(led, res.outcome, { ordinal, day });   // idempotent record
+        nextLed.tier = dispositionTier(foldDisposition(nextLed), tier);     // hysteretic tier for next time
+        nextLed.firstTrustDone = led.firstTrustDone;
+        index.ledgers[lpk] = nextLed;
+
+        const ev = { a: orc.seed, b: human.seed, day, at: Date.now(), aName: orc.name, bName: human.name, pairKey: lpk, ordinal, outcome: res.outcome };
+        if (res.outcome === 'raid') {
+            ev.kind = 'raid';
+            ev.aCarried = `${shortO} took what ${shortH} had gathered`;    // both readings — the contested record
+            ev.bCarried = `${shortH} remembers the ${shortO} raid`;
+            // #doctrine: the raider's COMMITMENT (lone band .15 -> mass host .55) times the defender's wall
+            // reduction (palisade halves it) sets the bite the victim's applyInbox docks from its stores.
+            const bite = +(doctrineDef(orc.doctrine).commit * (doctrineDef(human.doctrine).biteReduce ?? 1)).toFixed(3);
+            queueInbox(index, human.seed, { kind: 'raided', pairKey: lpk, ordinal, day, by: orc.name, commit: bite });
+        } else if (res.outcome === 'honored') {
+            ev.kind = 'reconciled';
+            ev.aCarried = `${shortO} was written into ${shortH}'s record - and kept faith`;
+            ev.bCarried = `${shortH} and ${shortO} kept faith at the frontier`;
+            queueInbox(index, human.seed, { kind: 'reconciled', pairKey: lpk, ordinal, day, envoy: human.envoy && human.envoy.seed, withName: orc.name });
+            queueInbox(index, orc.seed, { kind: 'reconciled', pairKey: lpk, ordinal, day, envoy: orc.envoy && orc.envoy.seed, withName: human.name });
+        } else {   // betrayed
+            ev.kind = 'betrayed';
+            const victimTown = res.betrayer === 'orc' ? human : orc;       // the honest party's envoy is wronged
+            ev.aCarried = `${res.betrayer === 'orc' ? shortO : shortH} used the open hand as cover`;
+            ev.bCarried = `${String(victimTown.name).split(' ')[0]} will remember the broken parley`;
+            queueInbox(index, victimTown.seed, { kind: 'betrayed', pairKey: lpk, ordinal, day, envoy: victimTown.envoy && victimTown.envoy.seed, by: (res.betrayer === 'orc' ? orc.name : human.name) });
+        }
+        fresh.push(ev);
+
+        // Slice D — NEWS PROPAGATION: word of this clash travels to the NEAREST THIRD town (memory across the
+        // graph). Seeded carrier (payload.type='news'); a lost courier delivers nothing. Exactly-once via id.
+        const d2To = (n, T) => { const ex = n.x - T.x, ey = n.y - T.y; return ex * ex + ey * ey; };
+        let third = null, bestD = Infinity;
+        for (const n of nodes) {
+            if (n === A || n === B) continue;
+            const nd = Math.min(d2To(n, A), d2To(n, B));
+            if (nd < bestD || (nd === bestD && third && n.seed < third.seed)) { bestD = nd; third = n; }
+        }
+        if (third) {
+            const fromNode = d2To(third, A) <= d2To(third, B) ? A : B;
+            const news = seedNews({ eventKey: lpk, ordinal, toSeed: third.seed, discoveryDay: day, dist: Math.sqrt(bestD) });
+            if (news.fate === 'arrives') queueInbox(index, third.seed, {
+                kind: 'traveler', pairKey: `news:${lpk}`, ordinal, day: news.arrivalDay, id: `news:${lpk}:${ordinal}:${third.seed}`,
+                payload: { type: 'news', text: newsLine(ev.kind, orc.name, human.name), of: ev.kind, fromCulture: fromNode.culture },
+            });
+            index.news = (index.news || []).concat([{ origin: fromNode.seed, destination: third.seed, fate: news.fate,
+                lostAt: news.lostAt, discoveryDay: day, arrivalDay: news.arrivalDay, of: ev.kind }]).slice(-40);
+        }
+    }
+    // #Codex24-4: index.encounters is now PRESENTATION history only (the durable dedup lives in metPairs), so
+    // cap it to a recent window — the world-map log shows recent clashes, not an ever-growing archive.
+    if (fresh.length) index.encounters = (index.encounters || []).concat(fresh).slice(-ENCOUNTER_HISTORY_CAP);
+    index.v = WORLD_INDEX_VERSION;
+    return fresh;
+}
+
+// A short human line for an encounter, for the world log / narrator (#4.1).
+export function encounterLine(ev) {
+    const a = String(ev.aName || `Town ${ev.a}`).split(' ')[0];   // orc side for cross-faction events
+    const b = String(ev.bName || `Town ${ev.b}`).split(' ')[0];   // human side
+    if (ev.kind === 'raid') return `The ${a} orc warband raided ${b} and took its harvest. ${b} won't forget.`;
+    if (ev.kind === 'reconciled') return `${b} and the ${a} orc warband met at the frontier and made peace instead of war.`;
+    if (ev.kind === 'betrayed') return `${b} and the ${a} orc warband tried to make peace, but the truce was broken in an ambush.`;
+    if (ev.kind === 'standoff') return `${b} braced for the ${a} orc warband — but they held the wall and never marched. No blood this time.`;   // #Codex30 a palisade raider stands down
+    // same-culture meeting
+    let s = `${a} and ${b} have grown close enough to reach one another.`;
+    if (ev.aCarried) s += ` ${a} carries word that "${ev.aCarried}".`;
+    return s;
+}

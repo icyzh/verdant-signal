@@ -1,0 +1,40 @@
+# Working on Verdant Signal
+
+Read this first. It is short on purpose; each section points at the document that goes deep.
+
+## 1. You are in the right repo
+
+Work here — **`~/verdant-signal`** (`github.com/icyzh/verdant-signal`, public). This is the only project repo.
+Legacy licensed art stays ignored; original art under `assets/verdant-signal/` is public and deployable.
+
+## 2. The rules that are not obvious from the code
+
+**[COMPATIBILITY.md](COMPATIBILITY.md)** — read before changing anything that touches saves, terrain
+generation, or the content tables. The game is live and players have towns in their own browsers that you can
+never reach or fix. Several ordinary-looking edits silently rewrite or destroy those towns:
+
+- bumping `SAVE_VERSION` without a migration step
+- reordering `PROJECT_DEFS`, `HOUSE_TIERS`, `CRAFTABLES`, or renumbering the `T` tile enum
+- changing a positional hash constant in `tilehash.js` or `farm.js`
+
+There is a test that catches all of those. Run it.
+
+**[TESTING.md](TESTING.md)** — how to run the game and the test suite, and what each file protects.
+`node tests/compat.mjs` takes half a second and is the one that catches the save-breaking changes.
+
+**[HOSTING.md](HOSTING.md)** — the single-repository Docker deployment and required environment variables.
+
+## 3. House conventions
+
+- **No build step.** Pure ES modules, Canvas 2D, one WebGL post-process. Do not add a bundler.
+- **The sim is deterministic.** Same seed ⇒ byte-identical town. The LLM and CockroachDB are display/
+  persistence side-channels the simulation loop never reads. Keep it that way — `tests/determinism.mjs`
+  pins four digests and a drift there is a real regression, not a re-baseline to wave through.
+- **Serve it, don't open it.** `OPENAI_API_KEY= node server.mjs 8123`. A blank key keeps the LLM endpoints in
+  fallback so nothing bills. `python3 -m http.server` serves **stale** modules — do not use it.
+- **Junk seeds for testing** (424242, 515151, 20260101). The pinned seeds in `determinism.mjs` are baselines;
+  do not casually re-pin them.
+- **Reviews** are run through Codex against a directive: `CODEX_REVIEW_<n>_DIRECTIVE.md` in the repo root,
+  gitignored so they never dirty the tree. Each carries a preamble requiring the reviewer to echo the HEAD sha
+  and the pinned digests read from the files at HEAD — that exists because a stale report was once resurfaced
+  against a newer tree, and the digests are what exposed it.

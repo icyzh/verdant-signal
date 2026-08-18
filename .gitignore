@@ -1,0 +1,112 @@
+# macOS
+.DS_Store
+
+# editor
+.vscode/
+.idea/
+
+# scratch / screenshots
+*.log
+screenshots/
+.playwright-mcp/
+
+# node (only if tooling is added later)
+node_modules/
+
+# Vercel CLI project link (created by `vercel` deploys) — never commit
+.vercel/
+
+# Licensed CraftPix art. The licence permits shipping it inside a deployed game and forbids a PUBLIC repo
+# of the raw files, so it is ignored HERE and committed to the private deploy repo instead (see Dockerfile).
+# `assets/*` rather than `assets/` lets the placeholder and original Verdant Signal art be re-included while
+# the licensed packs remain private.
+#
+# ⚠️ ADDING A NEW SPRITE? IT WILL NOT REACH THE DEPLOY UNTIL YOU COPY IT ACROSS.
+# Your new PNG is ignored here (that is the point), and the private deploy repo carries a CURATED
+# subset — only the 324 files the game was measured to load — so a code-only sync leaves it behind.
+# The deploy will then 404 that file SILENTLY, because every image loader has an onerror fallback.
+#     cp <new>.png ~/ry-farms-deploy/assets/<same path>
+#     cd ~/ry-farms-deploy && git fetch public && git merge public/main && git add -f assets && git commit
+# Full recipe, including how the 324 was measured: DEPLOY.md in ~/ry-farms-deploy.
+#
+assets/*
+!assets/.placeholder.png
+# Original project-owned art is safe to publish and ships from this repo.
+!assets/verdant-signal/
+!assets/verdant-signal/**
+
+# local LLM key for the expressive channel (server.mjs) - NEVER commit
+.env
+
+# SuperMemory local self-hosted store (encrypted data + embedding models)
+.supermemory/
+
+# 1-bit icon reference pack (browsed in component-library/index.html) — NOT a runtime
+# dependency of the game; 1.6k reference PNGs that don't belong in the shipped repo
+component-library/
+
+# personal Claude Code skill/config files — never belong in the project repo
+.agents/
+.claude/
+skills-lock.json
+
+# council/kimi/review scratch output + review packets (workflow scratch, not deliverables)
+.council-*.md
+KIMI_REVIEW_PACKET.md
+
+# generated Codex review patch (scratch, not a deliverable)
+review.diff
+
+# sprite/building design scratch — unlinked comparison pages and archetype experiments kept for my own
+# reference. scratch_td/pm_2.js calls itself "an EXERCISE, not a shipping asset". buildings.js is the
+# shipped outcome of this work; these are the workings behind it.
+scratch_td/
+sprites.html
+bubble_steady_compare.html
+click_sound_compare.html
+icon_picker.html
+rare_find_sound_compare.html
+coop_scene_compare.html
+structures_before_after.html
+topdown_styles_compare.html
+topdown_v2_compare.html
+topdown_styles.js
+PROCEDURAL_ART.md
+PROCEDURAL_ART_AUDIT.md
+
+# Codex review directives + reports — local-only working docs, never on the public repo
+CODEX_REVIEW_*.md
+CODEX_TEST_DIRECTIVE.md
+
+# internal working docs (plans / briefs / council / state / notes / reviews) — local-only, not public deliverables
+ADMIN_CONTROL_CENTER_PLAN.md
+CONSCIENCE_CHAT_PLAN.md
+COST_SAFETY_REVIEW.md
+COUNCIL_REVIEW_2026-07-09.md
+COUNCIL_STATE.md
+COUNCIL_STATE_0712.md
+COUNCIL_STATE_0714.md
+COUNTEROFFENSIVE_COUNCIL_BRIEF.md
+CRAFTING_GENERATIVE_PLAN.md
+CRAFTING_SYSTEM_PLAN.md
+CROSS_TOWN_PLAN.md
+DEMO_SCRIPT.md
+FOE_SIEGE_PLAN.md
+LEGIBILITY_PLAN.md
+MEMORY_AND_PERSISTENCE_PLAN.md
+MEMORY_DEPTH_PLAN.md
+MOMENTS_PLAN.md
+MULTITOWN_STREAMING_BRIEF.md
+NEXT_SLICE_PLAN.md
+ORC_BRANDING_NOTES.md
+ORC_HUMAN_LORE.md
+ORC_HUMAN_RECONCILIATION_PLAN.md
+ORC_LANDSCAPE_NOTES.md
+ORC_SPEECH_NOTES.md
+OVERNIGHT_PLAN.md
+RAID_DRAMA_BRIEF.md
+RAID_EXPERIENCE_REVIEW.md
+RY_FARMS_STATE.md
+TOWN_ROLES_PLAN.md
+WAR_DOCTRINES.md
+WORLD_OF_TOWNS_PLAN.md
